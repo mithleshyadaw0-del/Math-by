@@ -62,7 +62,12 @@ fun attemptAutoSignIn(
     onUnauthenticated: () -> Unit,
     scope: CoroutineScope
 ) {
-    if (Firebase.auth.currentUser != null) {
+    val auth = runCatching { Firebase.auth }.getOrNull()
+    if (auth == null) {
+        onUnauthenticated()
+        return
+    }
+    if (auth.currentUser != null) {
         onAuthSuccess()
         return
     }
@@ -84,7 +89,7 @@ fun attemptAutoSignIn(
             val cred = credentialManager.getCredential(context, request).credential
             if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
-                Firebase.auth.signInWithCredential(
+                auth.signInWithCredential(
                     GoogleAuthProvider.getCredential(token, null)
                 ).await()
                 onAuthSuccess()
@@ -108,6 +113,11 @@ fun onGoogleSignInClicked(
     scope: CoroutineScope,
     onAuthCancelled: () -> Unit = {}
 ) {
+    val auth = runCatching { Firebase.auth }.getOrNull()
+    if (auth == null) {
+        onAuthError("Firebase is not initialized in this build. Please install the build configured with google-services.json.")
+        return
+    }
     val clientId = resolveDefaultWebClientId(context)
     if (clientId == null) {
         onAuthError("Google Sign-In configuration missing: add google-services.json to enable Firebase Auth.")
@@ -127,7 +137,7 @@ fun onGoogleSignInClicked(
             }
             if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
-                Firebase.auth.signInWithCredential(
+                auth.signInWithCredential(
                     GoogleAuthProvider.getCredential(token, null)
                 ).await()
                 onAuthSuccess()
@@ -161,7 +171,7 @@ fun signOutSafely(
             } catch (e: Exception) {
                 Log.w(AUTH_TAG, "Failed to clear credential state: ${e.message}")
             } finally {
-                Firebase.auth.signOut()
+                runCatching { Firebase.auth.signOut() }
                 onSignOutComplete()
             }
         }

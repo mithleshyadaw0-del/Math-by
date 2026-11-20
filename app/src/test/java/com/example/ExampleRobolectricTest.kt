@@ -1,6 +1,11 @@
 package com.example
 
 import android.content.Context
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.core.content.ContextCompat
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.firebase.LocalAttemptDraft
@@ -9,6 +14,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -17,6 +23,20 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class ExampleRobolectricTest {
+
+    @get:Rule
+    val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    @Test
+    fun mainActivity_launchesSplashAndTransitionsToLoginWithoutCrashing() {
+        composeTestRule.onNodeWithTag("splash_screen").assertIsDisplayed()
+        composeTestRule.mainClock.advanceTimeBy(3000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("login_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("admin_login_card").performClick()
+        composeTestRule.onNodeWithTag("student_login_card").performClick()
+        composeTestRule.onNodeWithTag("google_sign_in_button").performScrollTo().assertIsDisplayed()
+    }
 
     @Test
     fun appBrandingAndAssets_resolveOfficialTeacherPhotoAndFirebaseConfig() {

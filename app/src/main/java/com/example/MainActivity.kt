@@ -85,7 +85,9 @@ import com.example.ui.theme.NavyDeep
 import com.example.ui.viewmodel.MbsViewModel
 import com.example.ui.viewmodel.UiState
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
 
@@ -120,25 +122,44 @@ fun MbsAppRoot() {
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
 
-    var showSplash by rememberSaveable { mutableStateOf(true) }
-    var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
-    var requestedPortal by rememberSaveable { mutableStateOf("student") }
-    var pendingStudentId by rememberSaveable { mutableStateOf("") }
-    var authGateError by remember { mutableStateOf<String?>(null) }
-
-    DisposableEffect(Unit) {
-        val listener = FirebaseAuth.AuthStateListener { auth ->
-            currentUser = auth.currentUser
+    val firebaseReady = remember(context) {
+        try {
+            FirebaseApp.getApps(context).isNotEmpty() || FirebaseApp.initializeApp(context) != null
+        } catch (_: Throwable) {
+            false
         }
-        Firebase.auth.addAuthStateListener(listener)
-        onDispose { Firebase.auth.removeAuthStateListener(listener) }
     }
 
-    LaunchedEffect(Unit) {
+    var showSplash by rememberSaveable { mutableStateOf(true) }
+    var currentUser by remember {
+        mutableStateOf<FirebaseUser?>(
+            if (firebaseReady) runCatching { Firebase.auth.currentUser }.getOrNull() else null
+        )
+    }
+    var requestedPortal by rememberSaveable { mutableStateOf("student") }
+    var pendingStudentId by rememberSaveable { mutableStateOf("") }
+    var authGateError by remember {
+        mutableStateOf<String?>(
+            if (!firebaseReady) "Firebase configuration (google-services.json) is missing in this build." else null
+        )
+    }
+
+    DisposableEffect(firebaseReady) {
+        if (!firebaseReady) return@DisposableEffect onDispose {}
+        val auth = runCatching { Firebase.auth }.getOrNull() ?: return@DisposableEffect onDispose {}
+        val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            currentUser = firebaseAuth.currentUser
+        }
+        auth.addAuthStateListener(listener)
+        onDispose { auth.removeAuthStateListener(listener) }
+    }
+
+    LaunchedEffect(firebaseReady) {
+        if (!firebaseReady) return@LaunchedEffect
         attemptAutoSignIn(
             context = context,
             credentialManager = credentialManager,
-            onAuthSuccess = { currentUser = Firebase.auth.currentUser },
+            onAuthSuccess = { currentUser = runCatching { Firebase.auth.currentUser }.getOrNull() },
             onUnauthenticated = {},
             scope = scope
         )
@@ -157,7 +178,7 @@ fun MbsAppRoot() {
                 authGateError = null
                 requestedPortal = portal
                 pendingStudentId = studentId
-                currentUser = Firebase.auth.currentUser
+                currentUser = if (firebaseReady) runCatching { Firebase.auth.currentUser }.getOrNull() else null
             }
         )
     } else {
