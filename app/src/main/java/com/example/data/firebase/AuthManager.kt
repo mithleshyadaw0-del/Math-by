@@ -145,12 +145,64 @@ fun onGoogleSignInClicked(
                 onAuthError("Unexpected credential type received.")
             }
         } catch (e: GetCredentialCancellationException) {
-            Log.w(AUTH_TAG, "Google Sign-In flow cancelled or dismissed: ${e.message}", e)
-            onAuthCancelled()
+            val detail = e.errorMessage?.toString() ?: e.message.orEmpty()
+            Log.w(AUTH_TAG, "Google Sign-In cancelled or rejected: $detail", e)
+            val isPlayServicesReject = detail.contains("16", ignoreCase = true) ||
+                detail.contains("10", ignoreCase = true) ||
+                detail.contains("28436", ignoreCase = true) ||
+                detail.contains("28444", ignoreCase = true) ||
+                detail.contains("reauth", ignoreCase = true) ||
+                detail.contains("caller", ignoreCase = true) ||
+                detail.contains("developer", ignoreCase = true) ||
+                detail.contains("mismatch", ignoreCase = true) ||
+                detail.contains("blocked", ignoreCase = true) ||
+                detail.contains("configured", ignoreCase = true)
+            if (isPlayServicesReject) {
+                val sha1 = getAppSigningSha1(context)
+                val sha1Hint = if (sha1 != null) " Add this SHA-1 in Firebase Console -> Project Settings -> Add fingerprint: $sha1" else ""
+                onAuthError("Google Sign-In rejected ($detail).$sha1Hint")
+            } else {
+                onAuthCancelled()
+            }
         } catch (e: Exception) {
             Log.e(AUTH_TAG, "Google Sign-In failed", e)
-            onAuthError(e.localizedMessage ?: "Sign in failed. Please try again.")
+            val msg = e.localizedMessage ?: "Sign in failed. Please try again."
+            val needsSha1Hint = msg.contains("10", ignoreCase = true) ||
+                msg.contains("16", ignoreCase = true) ||
+                msg.contains("developer", ignoreCase = true) ||
+                msg.contains("reauth", ignoreCase = true) ||
+                msg.contains("SHA", ignoreCase = true) ||
+                msg.contains("caller", ignoreCase = true)
+            val sha1 = if (needsSha1Hint) getAppSigningSha1(context) else null
+            val suffix = if (sha1 != null) " (Add SHA-1 in Firebase Console: $sha1)" else ""
+            onAuthError("$msg$suffix")
         }
+    }
+}
+
+private fun getAppSigningSha1(context: Context): String? {
+    return try {
+        val pm = context.packageManager
+        val certBytes = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            val pkgInfo = pm.getPackageInfo(
+                context.packageName,
+                android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+            )
+            pkgInfo.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
+                ?: pkgInfo.signingInfo?.signingCertificateHistory?.firstOrNull()?.toByteArray()
+        } else {
+            @Suppress("DEPRECATION")
+            val pkgInfo = pm.getPackageInfo(
+                context.packageName,
+                android.content.pm.PackageManager.GET_SIGNATURES
+            )
+            @Suppress("DEPRECATION")
+            pkgInfo.signatures?.firstOrNull()?.toByteArray()
+        } ?: return null
+        val digest = java.security.MessageDigest.getInstance("SHA-1").digest(certBytes)
+        digest.joinToString(":") { byte -> "%02X".format(byte) }
+    } catch (_: Exception) {
+        null
     }
 }
 

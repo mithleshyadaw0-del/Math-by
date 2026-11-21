@@ -32,29 +32,65 @@ jobs:
             "$SDKMANAGER" --install "platforms;android-36.1" || true
           fi
 
-      - name: Restore Firebase Configuration
+      - name: Write google-services.json from GitHub Secret (always overrides placeholder)
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
-          mkdir -p app
-          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
-            echo "Firebase Secret is missing"
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+            echo "Wrote app/google-services.json from GOOGLE_SERVICES_JSON secret."
+          elif [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+            echo "Wrote app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 secret."
+          fi
+
+          if [ ! -s app/google-services.json ] || ! grep -q "com.aistudio.mathsbymithlesh.mbskqr" app/google-services.json; then
+            echo "::error::Valid app/google-services.json for com.aistudio.mathsbymithlesh.mbskqr is missing! Add GOOGLE_SERVICES_JSON in Repo Settings -> Secrets and variables -> Actions."
+            echo "## Missing Firebase Config" >> "$GITHUB_STEP_SUMMARY"
+            echo "Please add the full contents of \`app/google-services.json\` as a GitHub Repository Secret named **\`GOOGLE_SERVICES_JSON\`** (Settings -> Secrets and variables -> Actions -> New repository secret), then re-run this workflow." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
-          python3 -m json.tool app/google-services.json > /dev/null
-          echo "Firebase configuration restored successfully"
+          echo "Verified app/google-services.json contains com.aistudio.mathsbymithlesh.mbskqr."
 
-      - name: Prepare debug keystore
+      - name: Restore cached GitHub debug keystore (if available)
+        uses: actions/cache@v4
+        with:
+          path: debug.keystore
+          key: mbs-github-debug-keystore-v1
+
+      - name: Prepare debug keystore and extract SHA-1 / SHA-256
+        id: keystore
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
-          if [ -s debug.keystore.base64 ]; then
-            base64 --decode debug.keystore.base64 > debug.keystore
-          elif [ ! -f debug.keystore ]; then
-            keytool -genkeypair -v -keystore debug.keystore \
-              -storepass android -alias androiddebugkey -keypass android \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+            printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > debug.keystore
+            echo "Restored debug.keystore from DEBUG_KEYSTORE_BASE64 secret."
+          elif [ -s debug.keystore.base64 ]; then
+            tr -d '[:space:]' < debug.keystore.base64 | base64 --decode > debug.keystore
+            echo "Restored debug.keystore from repo debug.keystore.base64."
+          elif [ -s debug.keystore ]; then
+            echo "Reusing cached GitHub debug.keystore (same SHA-1 as previous build)."
+          else
+            echo "Generating new persistent GitHub debug.keystore..."
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Maths By Mithlesh Sir,O=Android,C=IN"
           fi
+
+          ACTUAL_SHA1=$(keytool -list -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android | awk -F'SHA1: ' '/SHA1:/{print $2}' | tr -d '[:space:]')
+          ACTUAL_SHA256=$(keytool -list -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android | awk -F'SHA256: ' '/SHA256:/{print $2}' | tr -d '[:space:]')
+          echo "APK Signing SHA-1: $ACTUAL_SHA1"
+          echo "APK Signing SHA-256: $ACTUAL_SHA256"
+          echo "sha1=$ACTUAL_SHA1" >> "$GITHUB_OUTPUT"
+          echo "sha256=$ACTUAL_SHA256" >> "$GITHUB_OUTPUT"
 
       - name: Ensure .env exists from template
         run: |
@@ -72,6 +108,15 @@ jobs:
         run: |
           set -o pipefail
           gradle :app:assembleDebug --no-daemon --no-configuration-cache --stacktrace 2>&1 | tee gradle-build.log
+
+      - name: Verify Firebase resources were packaged into APK
+        run: |
+          VALUES_XML="app/build/generated/res/processDebugGoogleServices/values/values.xml"
+          if [ ! -f "$VALUES_XML" ] || ! grep -q "google_app_id" "$VALUES_XML" || ! grep -q "default_web_client_id" "$VALUES_XML"; then
+            echo "::error::Firebase resources (google_app_id / default_web_client_id) were NOT generated. Check GOOGLE_SERVICES_JSON secret."
+            exit 1
+          fi
+          echo "Confirmed google_app_id and default_web_client_id are packaged into the APK!"
 
       - name: Summarize error if Gradle failed
         if: failure()
@@ -102,14 +147,25 @@ jobs:
           name: Maths By Mithlesh Sir (Latest APK)
           body: |
             Automatic Android APK build for **Maths By Mithlesh Sir**.
+            Run: #${{ github.run_number }} (`${{ github.sha }}`)
 
-            Download `Maths-By-Mithlesh-Sir-debug.apk` below and install directly on Android.
+            ### Direct Download
+            Download `Maths-By-Mithlesh-Sir-debug.apk` below and install on Android.
+
+            ### Firebase Google Sign-In Fingerprints (Add Once in Firebase Console)
+            - **SHA-1:** `${{ steps.keystore.outputs.sha1 }}`
+            - **SHA-256:** `${{ steps.keystore.outputs.sha256 }}`
           files: Maths-By-Mithlesh-Sir-debug.apk
           make_latest: true
 
       - name: Write Download Summary
         run: |
           echo "## Maths By Mithlesh Sir — APK Build Ready" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Actions Artifact**: Download \`Maths-By-Mithlesh-Sir-Debug-APK\` at the bottom of this page." >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Direct APK Release**: https://github.com/${{ github.repository }}/releases/tag/latest-apk" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Direct APK File**: https://github.com/${{ github.repository }}/releases/download/latest-apk/Maths-By-Mithlesh-Sir-debug.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Release Page**: https://github.com/${{ github.repository }}/releases/tag/latest-apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Actions Artifact**: Download \`Maths-By-Mithlesh-Sir-Debug-APK\` at the bottom of this page." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### APK Signing Fingerprints (Add in Firebase Console -> Project Settings -> Your Apps)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SHA-1**: \`${{ steps.keystore.outputs.sha1 }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SHA-256**: \`${{ steps.keystore.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
+
